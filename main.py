@@ -15,6 +15,8 @@ TARGET_COVERAGE = 0.30           # coverage for fallback lowest‑rejection band
 MAX_BINS = 50
 SMALL_SAMPLE_BAND = 0.50         # central 50% band for small n
 EPS = 1e-9
+# Only show these defects in the Visual Defect filter
+DEFECTS_WHITELIST = ['Cutmark', 'Thin Socket', 'Extractor Crack', 'Core Burst']
 
 # -----------------------------
 # Utility functions
@@ -268,7 +270,9 @@ with col_f2:
     pc_sel = st.selectbox("Filter: Pipe Class", options=all_classes, index=0)
 with col_f3:
     if has_defect:
-        vd_values = ['(All)'] + sorted(df['VISUAL DEFECT'].dropna().astype(str).unique().tolist())
+        present = df['VISUAL DEFECT'].astype(str)
+        present_allowed = [d for d in DEFECTS_WHITELIST if d in set(present.unique())]
+        vd_values = ['(All)'] + present_allowed if present_allowed else ['(All)']
         vd_sel = st.selectbox("Filter: Visual Defect (optional)", options=vd_values, index=0)
     else:
         vd_sel = '(All)'
@@ -376,77 +380,15 @@ else:
     else:
         avg_bin_w = None
 
-# Draw LCL/UCL lines if present
+# Draw LCL/UCL lines + annotations if present
 if summary['LCL'] is not None:
     fig.add_vline(x=summary['LCL'], line_width=2, line_dash='dash', line_color='green')
+    fig.add_annotation(x=summary['LCL'], y=1.02, yref='paper', text='LCL', showarrow=False,
+                       font=dict(color='green', size=12), bgcolor='rgba(0,128,0,0.10)')
 if summary['UCL'] is not None:
     fig.add_vline(x=summary['UCL'], line_width=2, line_dash='dash', line_color='green')
-
-# -----------------------------
-# Bell curves – Gaussian fit OR KDE (scaled to counts)
-# -----------------------------
-# Build x-grid from available values
-x_vals = []
-if len(vals_green) > 0:
-    x_vals += [float(vals_green.min()), float(vals_green.max())]
-if len(vals_reject) > 0:
-    x_vals += [float(vals_reject.min()), float(vals_reject.max())]
-if not x_vals:
-    x_vals = [0.0, 1.0]
-
-x_min, x_max = min(x_vals), max(x_vals)
-if x_max == x_min:
-    x_max = x_min + 1.0
-x_grid = np.linspace(x_min, x_max, 300)
-
-# Helpers
-
-def scaled_normal_curve(values: pd.Series, x: np.ndarray, avg_w: Optional[float]):
-    if len(values) < 2:
-        return None
-    mu = float(values.mean())
-    sigma = float(values.std(ddof=0))
-    if sigma <= 0 or not np.isfinite(sigma):
-        return None
-    N = len(values)
-    bw = avg_w if (avg_w is not None and np.isfinite(avg_w) and avg_w > 0) else (x_max - x_min)/60.0
-    pdf = (1.0/(sigma*np.sqrt(2*np.pi))) * np.exp(-0.5*((x - mu)/sigma)**2)
-    return N * bw * pdf
-
-
-def scaled_kde_curve(values: pd.Series, x: np.ndarray, avg_w: Optional[float]):
-    n = len(values)
-    if n < 2:
-        return None
-    vals = values.to_numpy(dtype=float)
-    std = float(values.std(ddof=0))
-    if not np.isfinite(std) or std <= 0:
-        return None
-    # Silverman's rule of thumb
-    h = 1.06 * std * (n ** (-1/5))
-    if not np.isfinite(h) or h <= 0:
-        return None
-    # Vectorized Gaussian KDE
-    u = (x[:, None] - vals[None, :]) / h  # shape (m, n)
-    phi = np.exp(-0.5 * u**2) / np.sqrt(2*np.pi)
-    f = phi.mean(axis=1) / h  # (1/n) * sum phi / h
-    bw = avg_w if (avg_w is not None and np.isfinite(avg_w) and avg_w > 0) else (x_max - x_min)/60.0
-    return n * bw * f
-
-# Compute and plot
-if curve_mode.startswith("Gaussian"):
-    y_green = scaled_normal_curve(vals_green, x_grid, avg_bin_w)
-    y_reject = scaled_normal_curve(vals_reject, x_grid, avg_bin_w)
-else:
-    y_green = scaled_kde_curve(vals_green, x_grid, avg_bin_w)
-    y_reject = scaled_kde_curve(vals_reject, x_grid, avg_bin_w)
-
-if y_green is not None:
-    fig.add_scatter(x=x_grid, y=y_green, mode='lines', name='Green curve',
-                    line=dict(color='green', width=2))
-if y_reject is not None:
-    fig.add_scatter(x=x_grid, y=y_reject, mode='lines', name='Rejected curve',
-                    line=dict(color='orange', width=2))
+    fig.add_annotation(x=summary['UCL'], y=1.02, yref='paper', text='UCL', showarrow=False,
+                       font=dict(color='green', size=12), bgcolor='rgba(0,128,0,0.10)')
 
 fig.update_layout(
     xaxis_title=param,
@@ -477,4 +419,4 @@ with st.expander("Download analysis as CSV"):
 # -----------------------------
 # Helper notes
 # -----------------------------
-st.caption("Bars: Orange = rejected count, Green = accepted (green) pipes. Lines: bell curves (Gaussian fit or KDE) scaled to counts. Band shading: Green = bins inside recommended band; Red = bins with rejection probability above class threshold; Amber = below threshold but outside the chosen contiguous band.")
+st.caption("Bars: Orange = rejected count, Green = accepted (green) pipes. Lines: bell curves (Gaussian fit or KDE) scaled to counts." Band shading: Green = bins inside recommended band; Red = bins with rejection probability above class threshold; Amber = below threshold but outside the chosen contiguous band.")
