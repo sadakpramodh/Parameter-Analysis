@@ -383,12 +383,22 @@ else:
 # Draw LCL/UCL lines + annotations if present
 if summary['LCL'] is not None:
     fig.add_vline(x=summary['LCL'], line_width=2, line_dash='dash', line_color='green')
-    fig.add_annotation(x=summary['LCL'], y=1.02, yref='paper', text='LCL', showarrow=False,
-                       font=dict(color='green', size=12), bgcolor='rgba(0,128,0,0.10)')
+    try:
+        lcl_txt = f"LCL: {float(summary['LCL']):.2f}"
+    except Exception:
+        lcl_txt = "LCL"
+    fig.add_annotation(x=summary['LCL'], y=1.02, yref='paper', text=lcl_txt, showarrow=False,
+                       font=dict(color='green', size=12), bgcolor='rgba(0,128,0,0.10)',
+                       xanchor='left')
 if summary['UCL'] is not None:
     fig.add_vline(x=summary['UCL'], line_width=2, line_dash='dash', line_color='green')
-    fig.add_annotation(x=summary['UCL'], y=1.02, yref='paper', text='UCL', showarrow=False,
-                       font=dict(color='green', size=12), bgcolor='rgba(0,128,0,0.10)')
+    try:
+        ucl_txt = f"UCL: {float(summary['UCL']):.2f}"
+    except Exception:
+        ucl_txt = "UCL"
+    fig.add_annotation(x=summary['UCL'], y=1.02, yref='paper', text=ucl_txt, showarrow=False,
+                       font=dict(color='green', size=12), bgcolor='rgba(0,128,0,0.10)',
+                       xanchor='right')
 
 fig.update_layout(
     xaxis_title=param,
