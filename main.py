@@ -324,46 +324,57 @@ if summary['notes']:
     st.info("; ".join(summary['notes']))
 
 # -----------------------------
-# Histogram with colored bins
+# Histogram with colored bins + bell curves (Gaussian or KDE)
 # -----------------------------
 import plotly.graph_objects as go
 
-st.subheader("Histogram Bars – Orange = Rejected, Green = Accepted (aligned to analysis bins)")
+st.subheader("Histogram Bars + Bell Curves – Orange = Rejected, Green = Accepted")
 
-# Prepare colored rectangles per bin using the justification table (if available)
-if not just_df.empty:
-    bins_for_plot = make_histogram_bins(just_df, summary['LCL'], summary['UCL'])
-else:
-    bins_for_plot = []
+# Curve type toggle
+curve_mode = st.radio("Curve type:", ["Gaussian (Normal)", "KDE (Gaussian kernel)"], horizontal=True)
+
+# Use selected DN+Class (and optional defect) rows for bell curves
+plot_df = show_df[(show_df['DN'] == dn_sel) & (show_df['Pipe_Class'] == pc_sel)].copy()
+vals_all = pd.to_numeric(plot_df[param], errors='coerce')
+vals_green = vals_all[plot_df['Rejected_Flag'] == 0].dropna()
+vals_reject = vals_all[plot_df['Rejected_Flag'] == 1].dropna()
 
 fig = go.Figure()
 
+# If we have bin analysis, render bar histograms aligned to those bins
 if not just_df.empty:
-    # Use the same bin edges from the analysis for the bar histograms
     centers = (just_df['bin_left'] + just_df['bin_right']) / 2.0
     widths = (just_df['bin_right'] - just_df['bin_left']).abs()
 
     counts_reject = just_df['Rejections']
     counts_green = (just_df['Bin Count'] - just_df['Rejections']).clip(lower=0)
 
-    # Bar histograms with transparency (overlay mode)
     fig.add_bar(x=centers, y=counts_green, width=widths, name='Green (Accepted)',
                 marker_color='green', opacity=0.5)
     fig.add_bar(x=centers, y=counts_reject, width=widths, name='Rejected (Count)',
                 marker_color='orange', opacity=0.5)
 
-    # Bin band shading behind bars (green/red/amber)
+    # Band shading (green/red/amber) behind bars
+    bins_for_plot = make_histogram_bins(just_df, summary['LCL'], summary['UCL'])
     for b in bins_for_plot:
-        fig.add_vrect(x0=b['x0'], x1=b['x1'], fillcolor=b['color'], opacity=0.22, line_width=0, layer='below')
+        fig.add_vrect(x0=b['x0'], x1=b['x1'], fillcolor=b['color'], opacity=0.20, line_width=0, layer='below')
+
+    avg_bin_w = float(widths.mean()) if len(widths) else None
 else:
-    # Fallback to simple auto-binned histograms if we couldn't compute bins
-    plot_df = show_df[(show_df['DN'] == dn_sel) & (show_df['Pipe_Class'] == pc_sel)].copy()
-    vals_green = pd.to_numeric(plot_df.loc[plot_df['Rejected_Flag'] == 0, param], errors='coerce').dropna()
-    vals_reject = pd.to_numeric(plot_df.loc[plot_df['Rejected_Flag'] == 1, param], errors='coerce').dropna()
+    # Fallback: auto-binned histograms (overlay)
     if len(vals_green) > 0:
         fig.add_histogram(x=vals_green, nbinsx=60, name='Green (Accepted)', opacity=0.45, marker_color='green')
     if len(vals_reject) > 0:
         fig.add_histogram(x=vals_reject, nbinsx=60, name='Rejected (Count)', opacity=0.45, marker_color='orange')
+    # Estimate average bin width from range/nbins for bell-curve scaling
+    vmin = np.nanmin([vals_green.min() if len(vals_green)>0 else np.nan,
+                      vals_reject.min() if len(vals_reject)>0 else np.nan])
+    vmax = np.nanmax([vals_green.max() if len(vals_green)>0 else np.nan,
+                      vals_reject.max() if len(vals_reject)>0 else np.nan])
+    if np.isfinite(vmin) and np.isfinite(vmax):
+        avg_bin_w = (float(vmax) - float(vmin)) / 60.0 if float(vmax) > float(vmin) else None
+    else:
+        avg_bin_w = None
 
 # Draw LCL/UCL lines if present
 if summary['LCL'] is not None:
@@ -371,9 +382,75 @@ if summary['LCL'] is not None:
 if summary['UCL'] is not None:
     fig.add_vline(x=summary['UCL'], line_width=2, line_dash='dash', line_color='green')
 
+# -----------------------------
+# Bell curves – Gaussian fit OR KDE (scaled to counts)
+# -----------------------------
+# Build x-grid from available values
+x_vals = []
+if len(vals_green) > 0:
+    x_vals += [float(vals_green.min()), float(vals_green.max())]
+if len(vals_reject) > 0:
+    x_vals += [float(vals_reject.min()), float(vals_reject.max())]
+if not x_vals:
+    x_vals = [0.0, 1.0]
+
+x_min, x_max = min(x_vals), max(x_vals)
+if x_max == x_min:
+    x_max = x_min + 1.0
+x_grid = np.linspace(x_min, x_max, 300)
+
+# Helpers
+
+def scaled_normal_curve(values: pd.Series, x: np.ndarray, avg_w: Optional[float]):
+    if len(values) < 2:
+        return None
+    mu = float(values.mean())
+    sigma = float(values.std(ddof=0))
+    if sigma <= 0 or not np.isfinite(sigma):
+        return None
+    N = len(values)
+    bw = avg_w if (avg_w is not None and np.isfinite(avg_w) and avg_w > 0) else (x_max - x_min)/60.0
+    pdf = (1.0/(sigma*np.sqrt(2*np.pi))) * np.exp(-0.5*((x - mu)/sigma)**2)
+    return N * bw * pdf
+
+
+def scaled_kde_curve(values: pd.Series, x: np.ndarray, avg_w: Optional[float]):
+    n = len(values)
+    if n < 2:
+        return None
+    vals = values.to_numpy(dtype=float)
+    std = float(values.std(ddof=0))
+    if not np.isfinite(std) or std <= 0:
+        return None
+    # Silverman's rule of thumb
+    h = 1.06 * std * (n ** (-1/5))
+    if not np.isfinite(h) or h <= 0:
+        return None
+    # Vectorized Gaussian KDE
+    u = (x[:, None] - vals[None, :]) / h  # shape (m, n)
+    phi = np.exp(-0.5 * u**2) / np.sqrt(2*np.pi)
+    f = phi.mean(axis=1) / h  # (1/n) * sum phi / h
+    bw = avg_w if (avg_w is not None and np.isfinite(avg_w) and avg_w > 0) else (x_max - x_min)/60.0
+    return n * bw * f
+
+# Compute and plot
+if curve_mode.startswith("Gaussian"):
+    y_green = scaled_normal_curve(vals_green, x_grid, avg_bin_w)
+    y_reject = scaled_normal_curve(vals_reject, x_grid, avg_bin_w)
+else:
+    y_green = scaled_kde_curve(vals_green, x_grid, avg_bin_w)
+    y_reject = scaled_kde_curve(vals_reject, x_grid, avg_bin_w)
+
+if y_green is not None:
+    fig.add_scatter(x=x_grid, y=y_green, mode='lines', name='Green curve',
+                    line=dict(color='green', width=2))
+if y_reject is not None:
+    fig.add_scatter(x=x_grid, y=y_reject, mode='lines', name='Rejected curve',
+                    line=dict(color='orange', width=2))
+
 fig.update_layout(
     xaxis_title=param,
-    yaxis_title='Frequency',
+    yaxis_title='Count',
     legend=dict(orientation='h'),
     barmode='overlay',
     margin=dict(l=10, r=10, t=10, b=10)
@@ -400,4 +477,4 @@ with st.expander("Download analysis as CSV"):
 # -----------------------------
 # Helper notes
 # -----------------------------
-st.caption("Bars: Orange = rejected count, Green = accepted (green) pipes. Band shading: Green = bins inside recommended band; Red = bins with rejection probability above class threshold; Amber = below threshold but outside the chosen contiguous band.")
+st.caption("Bars: Orange = rejected count, Green = accepted (green) pipes. Lines: bell curves (Gaussian fit or KDE) scaled to counts. Band shading: Green = bins inside recommended band; Red = bins with rejection probability above class threshold; Amber = below threshold but outside the chosen contiguous band.")
