@@ -328,16 +328,20 @@ if summary['notes']:
     st.info("; ".join(summary['notes']))
 
 # -----------------------------
-# Histogram with colored bins + bell curves (Gaussian or KDE)
+# Histogram with colored bins + bell curves (Gaussian & KDE per group)
 # -----------------------------
 import plotly.graph_objects as go
 
-st.subheader("Histogram Bars + Bell Curves – Orange = Rejected, Green = Accepted")
+st.subheader("Histogram Bars + Bell Curves – Green vs Orange (Gaussian & KDE)")
 
-# Curve type toggle
-curve_mode = st.radio("Curve type:", ["Gaussian (Normal)", "KDE (Gaussian kernel)"], horizontal=True)
+# Curve visibility controls
+col_g, col_r = st.columns(2)
+with col_g:
+    green_modes = st.multiselect("Green curves", ["Gaussian", "KDE"], default=["Gaussian", "KDE"])
+with col_r:
+    reject_modes = st.multiselect("Rejected curves", ["Gaussian", "KDE"], default=["Gaussian", "KDE"])
 
-# Use selected DN+Class (and optional defect) rows for bell curves
+# Use selected DN+Class (and optional defect) rows for curves
 plot_df = show_df[(show_df['DN'] == dn_sel) & (show_df['Pipe_Class'] == pc_sel)].copy()
 vals_all = pd.to_numeric(plot_df[param], errors='coerce')
 vals_green = vals_all[plot_df['Rejected_Flag'] == 0].dropna()
@@ -370,7 +374,7 @@ else:
         fig.add_histogram(x=vals_green, nbinsx=60, name='Green (Accepted)', opacity=0.45, marker_color='green')
     if len(vals_reject) > 0:
         fig.add_histogram(x=vals_reject, nbinsx=60, name='Rejected (Count)', opacity=0.45, marker_color='orange')
-    # Estimate average bin width from range/nbins for bell-curve scaling
+    # Estimate average bin width from range/nbins for curve scaling
     vmin = np.nanmin([vals_green.min() if len(vals_green)>0 else np.nan,
                       vals_reject.min() if len(vals_reject)>0 else np.nan])
     vmax = np.nanmax([vals_green.max() if len(vals_green)>0 else np.nan,
@@ -399,6 +403,76 @@ if summary['UCL'] is not None:
     fig.add_annotation(x=summary['UCL'], y=1.02, yref='paper', text=ucl_txt, showarrow=False,
                        font=dict(color='green', size=12), bgcolor='rgba(0,128,0,0.10)',
                        xanchor='right')
+
+# -----------------------------
+# Bell curves – compute both Gaussian fit and KDE (scaled to counts)
+# -----------------------------
+# Build x-grid from available values
+x_vals = []
+if len(vals_green) > 0:
+    x_vals += [float(vals_green.min()), float(vals_green.max())]
+if len(vals_reject) > 0:
+    x_vals += [float(vals_reject.min()), float(vals_reject.max())]
+if not x_vals:
+    x_vals = [0.0, 1.0]
+
+x_min, x_max = min(x_vals), max(x_vals)
+if x_max == x_min:
+    x_max = x_min + 1.0
+x_grid = np.linspace(x_min, x_max, 300)
+
+# Helpers
+
+def scaled_normal_curve(values: pd.Series, x: np.ndarray, avg_w):
+    if len(values) < 2:
+        return None
+    mu = float(values.mean())
+    sigma = float(values.std(ddof=0))
+    if sigma <= 0 or not np.isfinite(sigma):
+        return None
+    N = len(values)
+    bw = avg_w if (avg_w is not None and np.isfinite(avg_w) and avg_w > 0) else (x_max - x_min)/60.0
+    pdf = (1.0/(sigma*np.sqrt(2*np.pi))) * np.exp(-0.5*((x - mu)/sigma)**2)
+    return N * bw * pdf
+
+
+def scaled_kde_curve(values: pd.Series, x: np.ndarray, avg_w):
+    n = len(values)
+    if n < 2:
+        return None
+    vals = values.to_numpy(dtype=float)
+    std = float(values.std(ddof=0))
+    if not np.isfinite(std) or std <= 0:
+        return None
+    # Silverman's rule
+    h = 1.06 * std * (n ** (-1/5))
+    if not np.isfinite(h) or h <= 0:
+        return None
+    u = (x[:, None] - vals[None, :]) / h  # (m, n)
+    phi = np.exp(-0.5 * u**2) / np.sqrt(2*np.pi)
+    f = phi.mean(axis=1) / h
+    bw = avg_w if (avg_w is not None and np.isfinite(avg_w) and avg_w > 0) else (x_max - x_min)/60.0
+    return n * bw * f
+
+# Compute all curves
+yg_norm = scaled_normal_curve(vals_green, x_grid, avg_bin_w)
+yg_kde  = scaled_kde_curve(vals_green, x_grid, avg_bin_w)
+yr_norm = scaled_normal_curve(vals_reject, x_grid, avg_bin_w)
+yr_kde  = scaled_kde_curve(vals_reject, x_grid, avg_bin_w)
+
+# Plot based on selections
+if (yg_norm is not None) and ("Gaussian" in green_modes):
+    fig.add_scatter(x=x_grid, y=yg_norm, mode='lines', name='Green – Gaussian',
+                    line=dict(color='green', width=2, dash='solid'))
+if (yg_kde is not None) and ("KDE" in green_modes):
+    fig.add_scatter(x=x_grid, y=yg_kde, mode='lines', name='Green – KDE',
+                    line=dict(color='green', width=2, dash='dot'))
+if (yr_norm is not None) and ("Gaussian" in reject_modes):
+    fig.add_scatter(x=x_grid, y=yr_norm, mode='lines', name='Rejected – Gaussian',
+                    line=dict(color='orange', width=2, dash='solid'))
+if (yr_kde is not None) and ("KDE" in reject_modes):
+    fig.add_scatter(x=x_grid, y=yr_kde, mode='lines', name='Rejected – KDE',
+                    line=dict(color='orange', width=2, dash='dot'))
 
 fig.update_layout(
     xaxis_title=param,
