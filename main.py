@@ -419,4 +419,4 @@ with st.expander("Download analysis as CSV"):
 # -----------------------------
 # Helper notes
 # -----------------------------
-st.caption("Bars: Orange = rejected count, Green = accepted (green) pipes. Lines: bell curves (Gaussian fit or KDE) scaled to counts." Band shading: Green = bins inside recommended band; Red = bins with rejection probability above class threshold; Amber = below threshold but outside the chosen contiguous band.")
+st.caption("Bars: Orange = rejected count, Green = accepted (green) pipes. Lines: bell curves (Gaussian fit or KDE) scaled to counts. Band shading: Green = bins inside recommended band; Red = bins with rejection probability above class threshold; Amber = below threshold but outside the chosen contiguous band.")
